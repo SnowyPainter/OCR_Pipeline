@@ -66,9 +66,25 @@ namespace OCRPipeline
             Cv.Rect? bestRect = null;
             var stepPaths = new List<string>();
 
+            // ROI 기반: 커서 중심 작은 영역에서 다중 이진화(양/음 폴라리티 + Sauvola)
+            // 위치를 좌/우/상/하로 소폭 랜덤 시프트하여 총 4회 처리
+            var contoursAll = new List<Cv.Rect>();
+            var rnd = new Random();
+            int maxShiftX = Math.Max(4, imgW / 20);   // 약 5% 폭
+            int maxShiftY = Math.Max(2, imgH / 20);   // 약 5% 높이
+            for (int i = 0; i < 4; i++)
+            {
+                int dx = rnd.Next(-maxShiftX, maxShiftX + 1);
+                int dy = rnd.Next(-maxShiftY, maxShiftY + 1);
+                var (roiContours, roiStepPaths) = FindContoursAroundCursorMulti(src, outputRoot, dx, dy);
+                stepPaths.AddRange(roiStepPaths);
+                contoursAll.AddRange(roiContours);
+            }
+
             // 단일 패스: 전체 캔버스 해상도에서 컨투어 탐지 및 OCR
             using var annotatedAll = src.Clone();
-            var contoursAll = FindContours(src);
+            var globalContours = FindContours(src);
+            contoursAll.AddRange(globalContours);
 
             foreach (var rect in contoursAll)
             {
@@ -210,6 +226,174 @@ namespace OCRPipeline
             });
 
             return MergeRectsByLine(rects, yOverlapThresh: 1.0, xGapFactor: 0.5);
+        }
+
+        // 커서 중심 작은 ROI에 대해 다중 이진화(밝은-글자/어두운-글자 + Sauvola) 후 컨투어 생성
+        private (List<Cv.Rect> rects, List<string> stepPaths) FindContoursAroundCursorMulti(Cv.Mat src, string outputRoot, int offsetX = 0, int offsetY = 0)
+        {
+            var stepPaths = new List<string>();
+
+            int imgW = src.Width;
+            int imgH = src.Height;
+
+            // 캔버스는 이미 커서 주변을 캡쳐한 이미지이므로 중앙 기반 소형 ROI 사용
+            int roiW = Math.Max(80, imgW / 2);
+            int roiH = Math.Max(40, imgH / 2);
+            int centerX = imgW / 2;
+            int centerY = imgH / 2;
+            int roiX = Math.Max(0, centerX - roiW / 2 + offsetX);
+            int roiY = Math.Max(0, centerY - roiH / 2 + offsetY);
+            var roiRect = new Cv.Rect(roiX, roiY, Math.Min(roiW, imgW - roiX), Math.Min(roiH, imgH - roiY));
+
+            using var roi = new Cv.Mat(src, roiRect);
+
+            // 회색조
+            using var roiGray = new Cv.Mat();
+            Cv2.CvtColor(roi, roiGray, Cv.ColorConversionCodes.BGR2GRAY);
+
+            // 3종 이진화: (1) 밝은-글자(BinaryInv), (2) 어두운-글자(Binary), (3) Sauvola
+            using var bwDarkOnLight = new Cv.Mat();   // 어두운 글자(검정) → BinaryInv가 더 유리할 수 있으나 이름 통일
+            using var bwLightOnDark = new Cv.Mat();   // 밝은 글자(흰색)
+            Cv.Mat bwSauvola = new Cv.Mat();
+
+            int blockSize = Math.Max(15, (Math.Min(roiRect.Width, roiRect.Height) / 15) | 1); // 홀수 보장
+            double C = 10;
+
+            // Adaptive (MeanC)
+            Cv2.AdaptiveThreshold(
+                roiGray, bwLightOnDark, 255,
+                Cv.AdaptiveThresholdTypes.MeanC,
+                Cv.ThresholdTypes.Binary, blockSize, C
+            );
+            Cv2.AdaptiveThreshold(
+                roiGray, bwDarkOnLight, 255,
+                Cv.AdaptiveThresholdTypes.MeanC,
+                Cv.ThresholdTypes.BinaryInv, blockSize, C
+            );
+
+            // Sauvola 수식 기반 임계값(의사구현)
+            bwSauvola = SauvolaThreshold(roiGray, blockSize, k: 0.2, R: 128.0, binaryInv: false);
+
+            string ts = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff");
+            var p1 = Path.Combine(outputRoot, $"roi_bin_light_{ts}.png");
+            var p2 = Path.Combine(outputRoot, $"roi_bin_dark_{ts}.png");
+            var p3 = Path.Combine(outputRoot, $"roi_sauvola_{ts}.png");
+            Cv2.ImWrite(p1, bwLightOnDark);
+            Cv2.ImWrite(p2, bwDarkOnLight);
+            Cv2.ImWrite(p3, bwSauvola);
+            stepPaths.AddRange(new[] { p1, p2, p3 });
+
+            // 세 마스크 각각에서 컨투어→BBox
+            var all = new List<Cv.Rect>();
+            void ExtractRectsFromMask(Cv.Mat mask)
+            {
+                using var work = mask.Clone();
+
+                // 수평 연결 강화
+                int approxCharH = Math.Max(12, work.Rows / 20);
+                int kernelW = Math.Max(approxCharH / 2, 6);
+                using (var hKernel = Cv2.GetStructuringElement(Cv.MorphShapes.Rect, new Cv.Size(kernelW, 1)))
+                    Cv2.Dilate(work, work, hKernel, iterations: 1);
+
+                Cv.Point[][] contours;
+                Cv.HierarchyIndex[] hierarchy;
+                Cv2.FindContours(
+                    work,
+                    out contours,
+                    out hierarchy,
+                    Cv.RetrievalModes.External,
+                    Cv.ContourApproximationModes.ApproxSimple
+                );
+
+                double imgArea = src.Width * src.Height;
+                foreach (var cnt in contours)
+                {
+                    if (cnt.Length < 3) continue;
+                    var r = Cv2.BoundingRect(cnt);
+                    // ROI 좌표 → 전체 좌표로 보정
+                    r = new Cv.Rect(r.X + roiRect.X, r.Y + roiRect.Y, r.Width, r.Height);
+
+                    double area = r.Width * r.Height;
+                    if (area < _opt.MinArea) continue;
+                    if (area > imgArea * _opt.MaxAreaRatio) continue;
+
+                    double ar = (double)r.Width / Math.Max(1, r.Height);
+                    if (ar < _opt.MinAspectRatio || ar > _opt.MaxAspectRatio) continue;
+                    all.Add(r);
+                }
+            }
+
+            ExtractRectsFromMask(bwLightOnDark);
+            ExtractRectsFromMask(bwDarkOnLight);
+            ExtractRectsFromMask(bwSauvola);
+
+            // 라인 병합 및 정렬
+            var merged = MergeRectsByLine(all, yOverlapThresh: 1.0, xGapFactor: 0.5);
+            return (merged, stepPaths);
+        }
+
+        // Sauvola 지역 임계값 이진화 (ximgproc 미사용 버전)
+        private static Cv.Mat SauvolaThreshold(Cv.Mat gray8u, int blockSize, double k = 0.2, double R = 128.0, bool binaryInv = false)
+        {
+            if (blockSize % 2 == 0) blockSize += 1;
+            blockSize = Math.Max(3, blockSize);
+
+            using var gray32 = new Cv.Mat();
+            gray8u.ConvertTo(gray32, Cv.MatType.CV_32F);
+
+            using var mean = new Cv.Mat();
+            using var sqmean = new Cv.Mat();
+
+            Cv2.Blur(gray32, mean, new Cv.Size(blockSize, blockSize));
+            using var graySq = new Cv.Mat();
+            Cv2.Multiply(gray32, gray32, graySq);
+            Cv2.Blur(graySq, sqmean, new Cv.Size(blockSize, blockSize));
+
+            using var meanSq = new Cv.Mat();
+            Cv2.Multiply(mean, mean, meanSq);
+            using var variance = new Cv.Mat();
+            Cv2.Subtract(sqmean, meanSq, variance);
+            using var zero = new Cv.Mat(variance.Size(), variance.Type(), new Cv.Scalar(0));
+            using var varClamped = new Cv.Mat();
+            Cv2.Max(variance, zero, varClamped);
+            using var stddev = new Cv.Mat();
+            Cv2.Sqrt(varClamped, stddev);
+
+            using var Rmat = new Cv.Mat(stddev.Size(), stddev.Type(), new Cv.Scalar(R));
+            using var sOverR = new Cv.Mat();
+            Cv2.Divide(stddev, Rmat, sOverR);
+
+            using var kMat = new Cv.Mat(sOverR.Size(), sOverR.Type(), new Cv.Scalar(k));
+            using var one = new Cv.Mat(sOverR.Size(), sOverR.Type(), new Cv.Scalar(1));
+            using var inner = new Cv.Mat();
+            Cv2.Subtract(sOverR, one, inner);
+            using var kInner = new Cv.Mat();
+            Cv2.Multiply(kMat, inner, kInner);
+            using var onePlus = new Cv.Mat();
+            Cv2.Add(one, kInner, onePlus);
+
+            using var thresh = new Cv.Mat();
+            Cv2.Multiply(mean, onePlus, thresh);
+
+            // gray32 - thresh > 0 => 255 else 0
+            using var diff = new Cv.Mat();
+            Cv2.Subtract(gray32, thresh, diff);
+            using var mask = new Cv.Mat();
+            Cv2.Threshold(diff, mask, 0, 255, Cv.ThresholdTypes.Binary);
+            if (binaryInv)
+            {
+                using var maskInv = new Cv.Mat();
+                Cv2.BitwiseNot(mask, maskInv);
+                using var maskInv8u = new Cv.Mat();
+                maskInv.ConvertTo(maskInv8u, Cv.MatType.CV_8U);
+                return maskInv8u.Clone();
+            }
+            else
+            {
+                using var mask8u = new Cv.Mat();
+                mask.ConvertTo(mask8u, Cv.MatType.CV_8U);
+                return mask8u.Clone();
+            }
         }
 
         private Cv.Mat PreprocessForOCRVariants(Cv.Mat roiBgr, string? outputPath = null)
