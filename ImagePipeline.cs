@@ -7,6 +7,7 @@ using OpenCvSharp.Extensions;       // Bitmap <-> Mat
 // 네임스페이스 별칭
 using SD = System.Drawing;
 using Cv = OpenCvSharp;
+using System.Numerics;
 
 namespace OCRPipeline
 {
@@ -28,7 +29,10 @@ namespace OCRPipeline
 
         public sealed class Result
         {
-            public string PreprocessedPath { get; set; } = "";
+            public string FinalAnnotatedPath { get; set; } = "";
+            public string BestText { get; set; } = "";
+            public float BestConfidence { get; set; } = 0f;
+            public List<string> StepPaths { get; set; } = new();
         }
 
         private readonly Options _opt;
@@ -39,42 +43,137 @@ namespace OCRPipeline
             Console.WriteLine("ImagePipeline initialized (OpenCV)");
         }
 
-        public Result Process(Bitmap bitmap, string outputRoot)
+        public Result Process(Cv.Mat src, string outputRoot, Matrix3x2 canvasToScreen)
         {
             Directory.CreateDirectory(outputRoot);
-            var partsDir = Path.Combine(outputRoot, "parts");
-            var preDir = Path.Combine(outputRoot, "pre");
-            Directory.CreateDirectory(partsDir);
-            Directory.CreateDirectory(preDir);
 
-            using Cv.Mat src = bitmap.ToMat(); // BGR
+            // 입력은 BGR Mat로 가정
             int imgW = src.Width;
             int imgH = src.Height;
-            double imgArea = imgW * imgH;
 
-            double imgCenterX = src.Width / 2;
-            double imgCenterY = src.Height / 2;
+            // OCR 서비스 초기화
+            using var ocr = new OCRService(new OCRService.Options
+            {
+                Languages = "kor+eng",
+                Psm = Tesseract.PageSegMode.SingleLine,
+                EngineMode = Tesseract.EngineMode.LstmOnly,
+                TessdataPath = null,
+                CharWhitelist = null
+            });
 
-            using Cv.Mat gray = new();
+            string bestText = string.Empty;
+            float bestConf = -1f;
+            Cv.Rect? bestRect = null;
+            var stepPaths = new List<string>();
+
+            // 단일 패스: 전체 캔버스 해상도에서 컨투어 탐지 및 OCR
+            using var annotatedAll = src.Clone();
+            var contoursAll = FindContours(src);
+
+            foreach (var rect in contoursAll)
+            {
+                var clip = rect & new Cv.Rect(0, 0, imgW, imgH);
+                if (clip.Width <= 10 || clip.Height <= 10) continue;
+
+                using var contourRoi = new Cv.Mat(src, clip);
+                var bin = PreprocessForOCRVariants(contourRoi, outputRoot);
+
+                var res1 = ocr.RecognizeMat(bin);
+
+                if (!string.IsNullOrWhiteSpace(res1.Text) && HasValidKoreanOrEnglish(res1.Text) && res1.MeanConfidence > bestConf)
+                {
+                    bestConf = res1.MeanConfidence;
+                    bestText = res1.Text;
+                    bestRect = clip;
+                }
+
+                bin.Dispose();
+            }
+
+            // 컨투어/최고 결과 오버레이 저장
+            foreach (var r in contoursAll)
+            {
+                var c = r & new Cv.Rect(0, 0, annotatedAll.Width, annotatedAll.Height);
+                if (c.Width > 0 && c.Height > 0)
+                    Cv2.Rectangle(annotatedAll, c, new Cv.Scalar(255, 0, 0), 1);
+            }
+            if (bestRect.HasValue)
+            {
+                var c = bestRect.Value & new Cv.Rect(0, 0, annotatedAll.Width, annotatedAll.Height);
+                if (c.Width > 0 && c.Height > 0)
+                {
+                    Cv2.Rectangle(annotatedAll, c, Cv.Scalar.Red, 2);
+                    if (!string.IsNullOrWhiteSpace(bestText))
+                    {
+                        int baseY = Math.Max(10, c.Y - 6);
+                        Cv2.PutText(annotatedAll, $"{bestText} ({bestConf:F1}%)",
+                            new Cv.Point(c.X, baseY),
+                            Cv.HersheyFonts.HersheySimplex, 0.4, Cv.Scalar.Lime, 1, Cv.LineTypes.AntiAlias);
+                    }
+                }
+            }
+            var nowAll = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff");
+            string contoursPath = Path.Combine(outputRoot, $"contours_{imgW}x{imgH}_{nowAll}.png");
+            Cv2.ImWrite(contoursPath, annotatedAll);
+            stepPaths.Add(contoursPath);
+
+            // 최종 전체 이미지에 결과 오버레이
+            using var finalAnnotated = src.Clone();
+            if (bestRect.HasValue)
+            {
+                Cv2.Rectangle(finalAnnotated, bestRect.Value, Cv.Scalar.Red, 3);
+                if (!string.IsNullOrWhiteSpace(bestText))
+                {
+                    int baseY = Math.Max(20, bestRect.Value.Y - 10);
+                    Cv2.PutText(finalAnnotated, $"BEST: {bestText} ({bestConf:F1}%)",
+                        new Cv.Point(bestRect.Value.X, baseY),
+                        Cv.HersheyFonts.HersheySimplex, 0.8, Cv.Scalar.Lime, 2, Cv.LineTypes.AntiAlias);
+                }
+            }
+
+            var finalNow = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+            string finalPath = Path.Combine(outputRoot, $"final_result_{finalNow}.png");
+            Cv2.ImWrite(finalPath, finalAnnotated);
+
+            return new Result
+            {
+                FinalAnnotatedPath = finalPath,
+                BestText = bestText,
+                BestConfidence = Math.Max(0, bestConf),
+                StepPaths = stepPaths
+            };
+        }
+
+        private static bool HasValidKoreanOrEnglish(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return false;
+            foreach (var ch in text)
+            {
+                if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')) return true;
+                if (ch >= '\uAC00' && ch <= '\uD7A3') return true; // Hangul syllables
+            }
+            return false;
+        }
+
+        private List<Cv.Rect> FindContours(Cv.Mat src)
+        {
+            // 기본 전처리: Gray -> Blur
+            using var gray = new Cv.Mat();
             Cv2.CvtColor(src, gray, Cv.ColorConversionCodes.BGR2GRAY);
 
-            using Cv.Mat blur = new();
+            using var blur = new Cv.Mat();
             Cv2.GaussianBlur(gray, blur, new Cv.Size(3, 3), 0);
 
-            using Cv.Mat bw = new();
-            Cv2.AdaptiveThreshold(
-                blur, bw, 255,
-                Cv.AdaptiveThresholdTypes.MeanC,
-                Cv.ThresholdTypes.BinaryInv,
-                21, 10
-            );
+            // 자동 이진화
+            using var bw = AutoBinarizeForBoxes(blur);
 
-            int approxCharH = Math.Max(12, gray.Rows / 60);          // 대략치
-            int kernelW = Math.Max(approxCharH / 2, 8);               // 글자 간 간격만 살짝 메울 정도
+            // 수평 팽창
+            int approxCharH = Math.Max(12, gray.Rows / 60);
+            int kernelW = Math.Max(approxCharH / 2, 8);
             using (var hKernel = Cv2.GetStructuringElement(Cv.MorphShapes.Rect, new Cv.Size(kernelW, 1)))
                 Cv2.Dilate(bw, bw, hKernel, iterations: 1);
 
-            // === 여기 타입이 중요! OpenCvSharp.Point[][]
+            // 외곽 찾기
             Cv.Point[][] contours;
             Cv.HierarchyIndex[] hierarchy;
             Cv2.FindContours(
@@ -85,14 +184,14 @@ namespace OCRPipeline
                 Cv.ContourApproximationModes.ApproxSimple
             );
 
-            using Cv.Mat annotated = src.Clone();
-
             var rects = new List<Cv.Rect>();
+            double imgArea = src.Width * src.Height;
+
             foreach (var cnt in contours)
             {
                 if (cnt.Length < 3) continue;
 
-                Cv.Rect rect = Cv2.BoundingRect(cnt);
+                var rect = Cv2.BoundingRect(cnt);
                 double area = rect.Width * rect.Height;
                 if (area < _opt.MinArea) continue;
                 if (area > imgArea * _opt.MaxAreaRatio) continue;
@@ -103,88 +202,158 @@ namespace OCRPipeline
                 rects.Add(rect);
             }
 
-            
+            // 정렬/라인 병합
             rects.Sort((a, b) =>
             {
                 int y = a.Y.CompareTo(b.Y);
                 return Math.Abs(a.Y - b.Y) < 10 ? a.X.CompareTo(b.X) : y;
             });
-            rects = MergeRectsByLine(rects, yOverlapThresh: 0.5, xGapFactor: 0.6);
 
-            var centerRect = GetCenterRect(rects, imgCenterX, imgCenterY);
-
-            var now = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-            var result = new Result();
-            if (centerRect.HasValue)
-            {
-                Cv2.Rectangle(annotated, centerRect.Value, Cv.Scalar.Red, 2);
-                using Cv.Mat roi = new Cv.Mat(src, centerRect.Value);
-                using Cv.Mat pre = PreprocessForOCR(roi);
-
-                string prePath = Path.Combine(preDir, $"part_{now}_pre.png");
-                Cv2.ImWrite(prePath, pre);
-
-                result.PreprocessedPath = prePath;
-
-                return result;
-            }
-
-            Cv2.ImWrite(Path.Combine(partsDir, $"annotated_{now}.png"), annotated);
-            
-            return result;
-            
+            return MergeRectsByLine(rects, yOverlapThresh: 1.0, xGapFactor: 0.5);
         }
 
-        private Cv.Mat PreprocessForOCR(Cv.Mat roiBgr)
+        private Cv.Mat PreprocessForOCRVariants(Cv.Mat roiBgr, string? outputPath = null)
         {
-            // 0) 업스케일 (얇은 획 보강의 전제)
-            Cv.Mat up = new();
+            // 0) 업스케일
+            var up = new Cv.Mat();
             double scale = Math.Max(1.0, _opt.Upscale * (_opt.BoostThinText ? _opt.BoostScale : 1));
             Cv2.Resize(roiBgr, up, new Cv.Size(), scale, scale, Cv.InterpolationFlags.Lanczos4);
 
-            // 1) 그레이 + 대비 강화 (CLAHE)
-            using var gray = new Cv.Mat();
-            Cv2.CvtColor(up, gray, Cv.ColorConversionCodes.BGR2GRAY);
+            string ts = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff");
+            if (!string.IsNullOrEmpty(outputPath)) Cv2.ImWrite(Path.Combine(outputPath, $"preprocess_1_upscaled_{ts}.png"), up);
 
-            using var claheOut = new Cv.Mat();
+            // 1) Lab → L 채널 (8U 보장)
+            using var lab = new Cv.Mat();
+            Cv2.CvtColor(up, lab, Cv.ColorConversionCodes.BGR2Lab);
+            Cv2.Split(lab, out Cv.Mat[] labCh);
+            using var L = labCh[0]; // 0~255
+            if (!string.IsNullOrEmpty(outputPath)) Cv2.ImWrite(Path.Combine(outputPath, $"preprocess_2_L_channel_{ts}.png"), L);
+
+            // 2) 대비 증폭: L + a*TopHat - b*BlackHat
+            int ks = Math.Max(3, (int)Math.Round(Math.Min(L.Rows, L.Cols) / 100.0) | 1); // 홀수
+            using var k = Cv2.GetStructuringElement(Cv.MorphShapes.Rect, new Cv.Size(ks, ks));
+            using var topHat = new Cv.Mat();
+            using var blackHat = new Cv.Mat();
+            Cv2.MorphologyEx(L, topHat, Cv.MorphTypes.TopHat, k);
+            Cv2.MorphologyEx(L, blackHat, Cv.MorphTypes.BlackHat, k);
+
+            double a = 1.0, b = 1.0; // 필요시 옵션으로 노출
+            using var tmp = new Cv.Mat();
+            Cv2.AddWeighted(L, 1.0, topHat, a, 0, tmp);          // tmp = L + a*TopHat
+            using var enhanced = new Cv.Mat();
+            Cv2.Subtract(tmp, blackHat * b, enhanced);           // enhanced = tmp - b*BlackHat
+                                                                 // (OpenCvSharp의 연산자 오버로드 사용 가능)
+
+            // 2.5) CLAHE로 지역 대비 추가 개선
             using var clahe = Cv.CLAHE.Create(clipLimit: 2.0, tileGridSize: new Cv.Size(8, 8));
-            clahe.Apply(gray, claheOut);
+            using var enhancedClahe = new Cv.Mat();
+            clahe.Apply(enhanced, enhancedClahe);
 
-            // 2) 소프트 디노이즈 (얇은 획 보존 위해 과도하지 않게)
-            Cv.Mat denoised = new();
-            if (_opt.ApplyDenoise)
-                Cv2.GaussianBlur(claheOut, denoised, new Cv.Size(3, 3), 0.0);
-            else
-                denoised = claheOut.Clone();
-
-            // 3) 지역 이진화 (얇은 글자에 유리)
-            //    - AdaptiveThreshold 또는 ximgproc의 Niblack/Sauvola가 있으면 Sauvola 권장
-            Cv.Mat bw = new();
-            Cv2.AdaptiveThreshold(
-                denoised, bw, 255,
-                Cv.AdaptiveThresholdTypes.MeanC,
-                Cv.ThresholdTypes.Binary,  // 얇은 폰트는 Binary가 더 안정적인 경우 多
-                21, 5
-            );
-
-            if (_opt.BoostThinText)
+            if (!string.IsNullOrEmpty(outputPath))
             {
-                // 4) 미세 팽창(획 두껍게). 가로 커널이 보통 안정적.
-                int k = Math.Max(1, bw.Rows / 200);  // 영상 크기 따라 1~2픽셀 정도
-                using var kernel = Cv2.GetStructuringElement(Cv.MorphShapes.Rect, new Cv.Size(1 + 2 * k, 1));
-                Cv2.Dilate(bw, bw, kernel, iterations: 1);
-
-                // 5) 점 노이즈 제거
-                using var small = Cv2.GetStructuringElement(Cv.MorphShapes.Rect, new Cv.Size(2, 2));
-                Cv2.MorphologyEx(bw, bw, Cv.MorphTypes.Open, small, iterations: 1);
+                Cv2.ImWrite(Path.Combine(outputPath, $"preprocess_3a_enhanced_{ts}.png"), enhanced);
+                Cv2.ImWrite(Path.Combine(outputPath, $"preprocess_3b_enhanced_clahe_{ts}.png"), enhancedClahe);
             }
 
+            // 3) 디노이즈
+            Cv.Mat denoised = new();
+            if (_opt.ApplyDenoise)
+                Cv2.GaussianBlur(enhancedClahe, denoised, new Cv.Size(3, 3), 0);
+            else
+                denoised = enhancedClahe.Clone();
+
+            if (!string.IsNullOrEmpty(outputPath))
+                Cv2.ImWrite(Path.Combine(outputPath, $"preprocess_4_denoised_{ts}.png"), denoised);
+
+            var bin = denoised.Clone();
+            
+            // 5) 얇은 글자 보강(선택)
+            if (_opt.BoostThinText)
+            {
+                int kThin = Math.Max(1, Math.Min(bin.Rows, bin.Cols) / 400);
+                using var hKernel = Cv2.GetStructuringElement(Cv.MorphShapes.Rect, new Cv.Size(1 + 2 * kThin, 1));
+                Cv2.Dilate(bin, bin, hKernel, iterations: 1);
+
+                using var small = Cv2.GetStructuringElement(Cv.MorphShapes.Rect, new Cv.Size(2, 2));
+                Cv2.MorphologyEx(bin, bin, Cv.MorphTypes.Open, small, iterations: 1);
+            }
+
+            if (!string.IsNullOrEmpty(outputPath))
+                Cv2.ImWrite(Path.Combine(outputPath, $"preprocess_5_binary_{ts}.png"), bin);
+
+            // 자원 정리
             up.Dispose();
             denoised.Dispose();
-            return bw;
+            labCh[1]?.Dispose();
+            labCh[2]?.Dispose();
+
+            return bin;
         }
 
 
+        // 자동 이진화(컨투어용)
+        private static Cv.Mat AutoBinarizeForBoxes(Cv.Mat grayOrBlur, bool forceOpposite = false)
+        {
+            var bin = new Cv.Mat();
+            var binInv = new Cv.Mat();
+
+            Cv2.AdaptiveThreshold(
+                grayOrBlur, bin, 255,
+                Cv.AdaptiveThresholdTypes.MeanC,
+                Cv.ThresholdTypes.Binary, 21, 10
+            );
+
+            Cv2.AdaptiveThreshold(
+                grayOrBlur, binInv, 255,
+                Cv.AdaptiveThresholdTypes.MeanC,
+                Cv.ThresholdTypes.BinaryInv, 21, 10
+            );
+
+            if (forceOpposite)
+            {
+                double sBin = ScoreMaskForText(bin);
+                double sInv = ScoreMaskForText(binInv);
+                return (sBin >= sInv) ? binInv : bin;
+            }
+            else
+            {
+                double sBin = ScoreMaskForText(bin);
+                double sInv = ScoreMaskForText(binInv);
+                return (sInv > sBin) ? binInv : bin;
+            }
+        }
+
+        // 텍스트스코어: 글자같은 CC 개수/균형
+        private static double ScoreMaskForText(Cv.Mat bw)
+        {
+            var mean = Cv2.Mean(bw).Val0;
+            double balance = 255.0 - Math.Abs(127.5 - mean) * 2.0;
+            balance = Math.Max(0, balance);
+
+            using var tmp = bw.Clone();
+            using (var k = Cv2.GetStructuringElement(Cv.MorphShapes.Rect, new Cv.Size(2, 1)))
+                Cv2.Dilate(tmp, tmp, k, iterations: 1);
+
+            Cv.Point[][] cnts;
+            Cv.HierarchyIndex[] hier;
+            Cv2.FindContours(tmp, out cnts, out hier,
+                Cv.RetrievalModes.External, Cv.ContourApproximationModes.ApproxSimple);
+
+            int good = 0;
+            foreach (var c in cnts)
+            {
+                if (c.Length < 3) continue;
+                var r = Cv2.BoundingRect(c);
+                if (r.Width < 2 || r.Height < 2) continue;
+                double ar = (double)r.Width / Math.Max(1, r.Height);
+                if (ar < 0.15 || ar > 15) continue;
+                good++;
+            }
+
+            return good * 10.0 + balance;
+        }
+
+        // 라인 병합
         private static List<Cv.Rect> MergeRectsByLine(IList<Cv.Rect> boxes, double yOverlapThresh = 0.5, double xGapFactor = 0.5)
         {
             var sorted = new List<Cv.Rect>(boxes);
@@ -204,7 +373,6 @@ namespace OCRPipeline
                     var nxt = line[i];
                     int gap = nxt.X - (cur.X + cur.Width);
                     int h = Math.Min(cur.Height, nxt.Height);
-                    // 수평 간격이 라인 높이의 xGapFactor 배 이하이면 같은 덩어리로 본다
                     if (gap <= h * xGapFactor)
                     {
                         cur = new Cv.Rect(
@@ -231,52 +399,17 @@ namespace OCRPipeline
                     line.Add(r);
                     continue;
                 }
-                // 같은 라인인지: 수직 겹침 비율로 판단
                 var refBox = line[0];
                 int yTop = Math.Max(refBox.Y, r.Y);
                 int yBot = Math.Min(refBox.Y + refBox.Height, r.Y + r.Height);
                 int overlap = Math.Max(0, yBot - yTop);
                 double overlapRatio = (double)overlap / Math.Min(refBox.Height, r.Height);
 
-                if (overlapRatio >= yOverlapThresh)
-                {
-                    line.Add(r);
-                }
-                else
-                {
-                    FlushLine();
-                    line.Add(r);
-                }
+                if (overlapRatio >= yOverlapThresh) line.Add(r);
+                else { FlushLine(); line.Add(r); }
             }
             FlushLine();
             return merged;
-        }
-
-        private static Cv.Rect? GetCenterRect(List<Cv.Rect> rects, double imgCenterX, double imgCenterY)
-        {
-            if (rects == null || rects.Count == 0)
-                return null;
-
-            Cv.Rect? bestRect = null;
-            double bestDist = double.MaxValue;
-
-            foreach (var r in rects)
-            {
-                // 사각형 중심 좌표
-                double cx = r.X + r.Width / 2.0;
-                double cy = r.Y + r.Height / 2.0;
-
-                // 이미지 센터와 거리 계산
-                double dist = Math.Sqrt(Math.Pow(cx - imgCenterX, 2) + Math.Pow(cy - imgCenterY, 2));
-
-                if (dist < bestDist)
-                {
-                    bestDist = dist;
-                    bestRect = r;
-                }
-            }
-
-            return bestRect;
         }
     }
 }

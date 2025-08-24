@@ -11,6 +11,7 @@ using Tesseract;
 using OpenCvSharp;
 using OpenCvSharp.Extensions;
 using Cv = OpenCvSharp;
+using System.Numerics;
 
 namespace OCRPipeline
 {
@@ -23,20 +24,40 @@ namespace OCRPipeline
         private static readonly ImagePipeline _pipeline = new(
             new ImagePipeline.Options
             {
-                Upscale = 2.0,
+                // 작은 글자 대비를 위해 업스케일↑
+                Upscale = 3.0,
+
+                // 전처리 기본값 유지
                 ApplyBinarize = true,
                 ApplyDenoise = true,
-                MinArea = 120,
-                MaxAreaRatio = 0.85,
-                MinAspectRatio = 0.05,
-                MaxAspectRatio = 20.0
+
+                // 얇은 글자(10~12px) 보강
+                BoostThinText = true,
+                BoostScale = 4,   // 2~3 사이 튜닝 포인트
+
+                // 박스 필터 튜닝
+                MinArea = 60,   // ↓ 120 → 60 (작은 글자 조각 통과)
+                MaxAreaRatio = 0.75, // ↓ 0.85 → 0.75 (버튼 전체 박스 억제)
+                MinAspectRatio = 0.08, // ↑ 0.05 → 0.08 (너무 가느다란 노이즈 컷)
+                MaxAspectRatio = 15.0  // ↓ 20.0 → 15.0 (가로로 과도하게 긴 박스 컷)
             }
         );
 
+
         static async Task Main(string[] args)
         {
+            Dpi.EnablePerMonitorV2();
+
+            // outputs 폴더 초기화
+            string outputsDir = Path.Combine(AppContext.BaseDirectory, "outputs");
+            if (Directory.Exists(outputsDir))
+            {
+                Directory.Delete(outputsDir, true);
+                Console.WriteLine("✓ Cleared outputs folder");
+            }
+
             Console.WriteLine("▶ 전역 마우스 후킹 시작");
-            Console.WriteLine("   - 마우스 클릭: 해당 위치 기준 영역 캡처 → OpenCV 파이프라인 처리");
+            Console.WriteLine("   - 마우스 클릭: 해당 위치 기준 영역 캡처 → 점진적 ROI 축소로 5회 OCR 처리");
             Console.WriteLine("   - ESC: 종료\n");
 
             _hook = new SimpleGlobalHook();
@@ -75,34 +96,37 @@ namespace OCRPipeline
                     int x = (int)e.Data.X;
                     int y = (int)e.Data.Y;
 
-                    // 캡처 크기는 필요 시 조정(가로 300, 세로 150)
-                    using var bmp = CaptureAround(x, y, 300, 150, out string rawPath);
-                    Console.WriteLine($"✓ Raw saved: {rawPath}");
+                    const int captureWidth = 300;
+                    const int captureHeight = 100;
+
+                    var (bmp, canvasToScreen) = CaptureUtil.CaptureAroundDpiSafe(x, y, captureWidth, captureHeight);
+                    using var src = bmp.ToMat();
 
                     // 출력 루트 디렉터리 생성
                     string runRoot = Path.Combine(
                         AppContext.BaseDirectory,
                         "outputs",
-                        DateTime.Now.ToString("yyyyMMdd_HHmmss")
+                        DateTime.Now.ToString("yyyyMMdd_HHmmss_fff")
                     );
                     Directory.CreateDirectory(runRoot);
 
-                    // 파이프라인 처리
-                    var result = _pipeline.Process(bmp, runRoot);
+                    // 캡처 원본 저장 (기존과 동일한 경로 규칙)
+                    var rawsDir = Path.Combine(AppContext.BaseDirectory, "raws");
+                    Directory.CreateDirectory(rawsDir);
+                    var rawPath = Path.Combine(
+                        rawsDir,
+                        $"raw_{DateTime.Now:yyyyMMdd_HHmmss_fff}_{x}x{y}.png"
+                    );
+                    bmp.Save(rawPath, System.Drawing.Imaging.ImageFormat.Png);
 
-                    using var ocr = new OCRService(new OCRService.Options
-                    {
-                        Languages = "kor+eng",
-                        Psm = PageSegMode.SingleLine,          // 한 줄만이면 SingleLine, UI 버튼이면 SparseText 등으로 바꿔도 OK
-                        CharWhitelist = null,            // 숫자만 필요하면 "0123456789-:()" 등
-                        TessdataPath = null,             // 기본: ./tessdata
-                        EngineMode = EngineMode.LstmOnly
-                    });
+                    var result = _pipeline.Process(src, runRoot, canvasToScreen);
+                    var trimmed = OCRService.TrimConcatenatedText(result.BestText);
 
-                    var ocrResult = ocr.RecognizeAsync(result.PreprocessedPath);
-                    var trimmed = OCRService.TrimConcatenatedText(ocrResult.Text);
-                    Console.WriteLine($"✓ OCR: {ocrResult.Text} -> {trimmed}");
-                    ocr.Dispose();
+                    Console.WriteLine($"\n=== 최종 결과 ===");
+                    Console.WriteLine($"✓ 최고 OCR: \"{result.BestText}\" ({result.BestConfidence:F1}%)");
+                    Console.WriteLine($"✓ 정리된 텍스트: \"{trimmed}\"");
+                    Console.WriteLine($"✓ 스텝별 이미지 {result.StepPaths.Count}개 저장됨");
+                    Console.WriteLine($"✓ 최종 결과: {result.FinalAnnotatedPath}\n");
                 }
                 catch (Exception ex)
                 {
@@ -114,7 +138,6 @@ namespace OCRPipeline
                 }
             });
         }
-
         /// <summary>
         /// 중심 좌표 기준으로 width x height 화면 캡처
         /// </summary>

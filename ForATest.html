@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OCR 클릭 추적 테스트 페이지</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            overflow: hidden;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+        }
+
+        .header {
+            background: linear-gradient(45deg, #ff6b6b, #ee5a24);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .section {
+            padding: 30px;
+            border-bottom: 3px solid #f1f2f6;
+        }
+
+        .section:last-child {
+            border-bottom: none;
+        }
+
+        .section-title {
+            font-size: 24px;
+            margin-bottom: 20px;
+            color: #2f3542;
+            border-left: 5px solid #3742fa;
+            padding-left: 15px;
+        }
+
+        /* 버튼 스타일들 */
+        .btn {
+            padding: 12px 24px;
+            margin: 8px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            text-decoration: none;
+            display: inline-block;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary { background: #3742fa; color: white; }
+        .btn-secondary { background: #57606f; color: white; }
+        .btn-success { background: #2ed573; color: white; }
+        .btn-danger { background: #ff4757; color: white; }
+        .btn-warning { background: #ffa502; color: black; }
+        .btn-info { background: #70a1ff; color: white; }
+        .btn-light { background: #f1f2f6; color: #2f3542; border: 2px solid #ddd; }
+        .btn-dark { background: #2f3542; color: white; }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }
+
+        /* 크기별 버튼 */
+        .btn-sm { padding: 6px 12px; font-size: 12px; }
+        .btn-lg { padding: 16px 32px; font-size: 18px; }
+        .btn-xl { padding: 20px 40px; font-size: 24px; }
+
+        /* 텍스트 요소들 */
+        .text-samples {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+        }
+
+        .text-box {
+            padding: 20px;
+            border-radius: 10px;
+            margin: 10px 0;
+        }
+
+        .bg-dark { background: #2f3542; color: white; }
+        .bg-light { background: #f1f2f6; color: #2f3542; }
+        .bg-primary { background: #3742fa; color: white; }
+        .bg-success { background: #2ed573; color: white; }
+        .bg-danger { background: #ff4757; color: white; }
+        .bg-warning { background: #ffa502; color: black; }
+        .bg-info { background: #70a1ff; color: white; }
+
+        /* 폼 요소들 */
+        .form-group {
+            margin: 15px 0;
+        }
+
+        .form-control {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+
+        .form-control:focus {
+            outline: none;
+            border-color: #3742fa;
+            box-shadow: 0 0 0 3px rgba(55, 66, 250, 0.1);
+        }
+
+        /* 테이블 */
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+
+        .table th, .table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+
+        .table th {
+            background: #3742fa;
+            color: white;
+            font-weight: 600;
+        }
+
+        .table tr:nth-child(even) {
+            background: #f8f9fa;
+        }
+
+        .table tr:hover {
+            background: #e3f2fd;
+        }
+
+        /* 네비게이션 */
+        .nav {
+            background: #2f3542;
+            padding: 15px;
+        }
+
+        .nav a {
+            color: white;
+            text-decoration: none;
+            padding: 10px 20px;
+            margin: 0 5px;
+            border-radius: 5px;
+            transition: background 0.3s;
+        }
+
+        .nav a:hover {
+            background: #57606f;
+        }
+
+        /* 카드들 */
+        .card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+        }
+
+        .card {
+            border: 1px solid #ddd;
+            border-radius: 10px;
+            overflow: hidden;
+            transition: transform 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+        }
+
+        .card-header {
+            padding: 15px;
+            font-weight: 600;
+        }
+
+        .card-body {
+            padding: 15px;
+        }
+
+        /* 특수 효과들 */
+        .gradient-text {
+            background: linear-gradient(45deg, #3742fa, #ff4757);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-weight: bold;
+        }
+
+        .shadow-text {
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+        }
+
+        .outline-text {
+            -webkit-text-stroke: 1px #3742fa;
+            color: transparent;
+        }
+
+        /* 대비가 낮은 텍스트들 */
+        .low-contrast-1 { color: #ccc; background: white; }
+        .low-contrast-2 { color: #777; background: #f0f0f0; }
+        .low-contrast-3 { color: #444; background: #333; }
+
+        /* 크기별 텍스트 */
+        .text-xs { font-size: 10px; }
+        .text-sm { font-size: 12px; }
+        .text-base { font-size: 16px; }
+        .text-lg { font-size: 20px; }
+        .text-xl { font-size: 24px; }
+        .text-2xl { font-size: 32px; }
+        .text-3xl { font-size: 48px; }
+
+        /* 회전된 텍스트 */
+        .rotate-45 { transform: rotate(45deg); display: inline-block; }
+        .rotate-90 { transform: rotate(90deg); display: inline-block; }
+        .rotate-180 { transform: rotate(180deg); display: inline-block; }
+
+        /* 특수 레이아웃 */
+        .grid-layout {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            margin: 20px 0;
+        }
+
+        .flex-layout {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- 헤더 -->
+        <div class="header">
+            <h1>OCR 클릭 추적 테스트 페이지</h1>
+            <p>다양한 UI 요소들과 색상 조합을 포함한 종합 테스트 페이지</p>
+        </div>
+
+        <!-- 네비게이션 -->
+        <div class="nav">
+            <a href="#buttons">버튼</a>
+            <a href="#text">텍스트</a>
+            <a href="#forms">폼</a>
+            <a href="#tables">테이블</a>
+            <a href="#cards">카드</a>
+            <a href="#special">특수효과</a>
+        </div>
+
+        <!-- 버튼 섹션 -->
+        <div class="section" id="buttons">
+            <h2 class="section-title">버튼 요소들</h2>
+            
+            <h3>기본 색상 버튼</h3>
+            <div>
+                <button class="btn btn-primary">기본 버튼</button>
+                <button class="btn btn-secondary">보조 버튼</button>
+                <button class="btn btn-success">성공 버튼</button>
+                <button class="btn btn-danger">위험 버튼</button>
+                <button class="btn btn-warning">경고 버튼</button>
+                <button class="btn btn-info">정보 버튼</button>
+                <button class="btn btn-light">밝은 버튼</button>
+                <button class="btn btn-dark">어두운 버튼</button>
+            </div>
+
+            <h3>크기별 버튼</h3>
+            <div>
+                <button class="btn btn-primary btn-sm">작은 버튼</button>
+                <button class="btn btn-success">보통 버튼</button>
+                <button class="btn btn-danger btn-lg">큰 버튼</button>
+                <button class="btn btn-info btn-xl">매우 큰 버튼</button>
+            </div>
+
+            <h3>링크 버튼</h3>
+            <div>
+                <a href="#" class="btn btn-primary">링크 버튼 1</a>
+                <a href="#" class="btn btn-success">링크 버튼 2</a>
+                <a href="#" class="btn btn-danger">링크 버튼 3</a>
+            </div>
+        </div>
+
+        <!-- 텍스트 섹션 -->
+        <div class="section" id="text">
+            <h2 class="section-title">텍스트 요소들</h2>
+            
+            <h3>배경색별 텍스트</h3>
+            <div class="text-samples">
+                <div class="text-box bg-dark">어두운 배경의 흰색 텍스트</div>
+                <div class="text-box bg-light">밝은 배경의 어두운 텍스트</div>
+                <div class="text-box bg-primary">파란 배경의 흰색 텍스트</div>
+                <div class="text-box bg-success">초록 배경의 흰색 텍스트</div>
+                <div class="text-box bg-danger">빨간 배경의 흰색 텍스트</div>
+                <div class="text-box bg-warning">노란 배경의 검은 텍스트</div>
+                <div class="text-box bg-info">하늘색 배경의 흰색 텍스트</div>
+            </div>
+
+            <h3>크기별 텍스트</h3>
+            <div>
+                <p class="text-xs">매우 작은 텍스트 (10px)</p>
+                <p class="text-sm">작은 텍스트 (12px)</p>
+                <p class="text-base">기본 텍스트 (16px)</p>
+                <p class="text-lg">큰 텍스트 (20px)</p>
+                <p class="text-xl">매우 큰 텍스트 (24px)</p>
+                <p class="text-2xl">초대형 텍스트 (32px)</p>
+                <p class="text-3xl">거대 텍스트 (48px)</p>
+            </div>
+
+            <h3>특수 효과 텍스트</h3>
+            <div>
+                <p class="gradient-text text-2xl">그라데이션 텍스트</p>
+                <p class="shadow-text text-xl" style="color: white; background: #333; padding: 10px;">그림자 텍스트</p>
+                <p class="outline-text text-xl">아웃라인 텍스트</p>
+            </div>
+
+            <h3>대비 낮은 텍스트 (OCR 어려운 케이스)</h3>
+            <div>
+                <p class="low-contrast-1 text-box">낮은 대비 텍스트 1</p>
+                <p class="low-contrast-2 text-box">낮은 대비 텍스트 2</p>
+                <p class="low-contrast-3 text-box">낮은 대비 텍스트 3</p>
+            </div>
+
+            <h3>회전된 텍스트</h3>
+            <div style="height: 100px; display: flex; align-items: center; gap: 50px;">
+                <span class="rotate-45">45도 회전</span>
+                <span class="rotate-90">90도 회전</span>
+                <span class="rotate-180">180도 회전</span>
+            </div>
+        </div>
+
+        <!-- 폼 섹션 -->
+        <div class="section" id="forms">
+            <h2 class="section-title">폼 요소들</h2>
+            
+            <form>
+                <div class="form-group">
+                    <label>텍스트 입력:</label>
+                    <input type="text" class="form-control" placeholder="텍스트를 입력하세요">
+                </div>
+                
+                <div class="form-group">
+                    <label>이메일 입력:</label>
+                    <input type="email" class="form-control" placeholder="email@example.com">
+                </div>
+                
+                <div class="form-group">
+                    <label>비밀번호 입력:</label>
+                    <input type="password" class="form-control" placeholder="비밀번호">
+                </div>
+                
+                <div class="form-group">
+                    <label>선택 박스:</label>
+                    <select class="form-control">
+                        <option>옵션 1</option>
+                        <option>옵션 2</option>
+                        <option>옵션 3</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label>텍스트 영역:</label>
+                    <textarea class="form-control" rows="4" placeholder="여러 줄 텍스트를 입력하세요"></textarea>
+                </div>
+                
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox"> 체크박스 항목 1
+                    </label><br>
+                    <label>
+                        <input type="checkbox"> 체크박스 항목 2
+                    </label>
+                </div>
+                
+                <div class="form-group">
+                    <label>
+                        <input type="radio" name="radio" value="1"> 라디오 버튼 1
+                    </label><br>
+                    <label>
+                        <input type="radio" name="radio" value="2"> 라디오 버튼 2
+                    </label>
+                </div>
+                
+                <button type="submit" class="btn btn-primary">제출하기</button>
+                <button type="reset" class="btn btn-secondary">초기화</button>
+            </form>
+        </div>
+
+        <!-- 테이블 섹션 -->
+        <div class="section" id="tables">
+            <h2 class="section-title">테이블 요소들</h2>
+            
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>번호</th>
+                        <th>이름</th>
+                        <th>이메일</th>
+                        <th>상태</th>
+                        <th>액션</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>1</td>
+                        <td>김철수</td>
+                        <td>kim@example.com</td>
+                        <td><span class="btn btn-sm btn-success">활성</span></td>
+                        <td>
+                            <button class="btn btn-sm btn-primary">편집</button>
+                            <button class="btn btn-sm btn-danger">삭제</button>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>2</td>
+                        <td>이영희</td>
+                        <td>lee@example.com</td>
+                        <td><span class="btn btn-sm btn-warning">대기</span></td>
+                        <td>
+                            <button class="btn btn-sm btn-primary">편집</button>
+                            <button class="btn btn-sm btn-danger">삭제</button>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>3</td>
+                        <td>박민수</td>
+                        <td>park@example.com</td>
+                        <td><span class="btn btn-sm btn-secondary">비활성</span></td>
+                        <td>
+                            <button class="btn btn-sm btn-primary">편집</button>
+                            <button class="btn btn-sm btn-danger">삭제</button>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- 카드 섹션 -->
+        <div class="section" id="cards">
+            <h2 class="section-title">카드 요소들</h2>
+            
+            <div class="card-grid">
+                <div class="card">
+                    <div class="card-header bg-primary">카드 헤더 1</div>
+                    <div class="card-body">
+                        <p>이것은 카드 내용입니다. 클릭 가능한 영역을 테스트합니다.</p>
+                        <button class="btn btn-primary">액션 버튼</button>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <div class="card-header bg-success">카드 헤더 2</div>
+                    <div class="card-body">
+                        <p>다양한 색상의 카드를 통해 OCR 성능을 테스트합니다.</p>
+                        <button class="btn btn-success">확인</button>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <div class="card-header bg-danger">카드 헤더 3</div>
+                    <div class="card-body">
+                        <p>카드 내부의 텍스트와 버튼을 인식하는지 확인합니다.</p>
+                        <button class="btn btn-danger">삭제</button>
+                    </div>
+                </div>
+                
+                <div class="card">
+                    <div class="card-header bg-dark">카드 헤더 4</div>
+                    <div class="card-body">
+                        <p>어두운 배경과 밝은 텍스트의 조합입니다.</p>
+                        <button class="btn btn-dark">더보기</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 특수 효과 섹션 -->
+        <div class="section" id="special">
+            <h2 class="section-title">특수 레이아웃 및 효과</h2>
+            
+            <h3>그리드 레이아웃</h3>
+            <div class="grid-layout">
+                <div class="btn btn-primary">그리드 1</div>
+                <div class="btn btn-success">그리드 2</div>
+                <div class="btn btn-danger">그리드 3</div>
+                <div class="btn btn-info">그리드 4</div>
+                <div class="btn btn-warning">그리드 5</div>
+                <div class="btn btn-secondary">그리드 6</div>
+                <div class="btn btn-dark">그리드 7</div>
+                <div class="btn btn-light">그리드 8</div>
+            </div>
+            
+            <h3>플렉스 레이아웃</h3>
+            <div class="flex-layout">
+                <span class="btn btn-primary">왼쪽</span>
+                <span class="btn btn-success">가운데</span>
+                <span class="btn btn-danger">오른쪽</span>
+            </div>
+            
+            <h3>중첩된 요소들</h3>
+            <div style="position: relative; height: 200px; background: #f0f0f0; border-radius: 10px;">
+                <div style="position: absolute; top: 20px; left: 20px; background: red; color: white; padding: 10px; border-radius: 5px;">
+                    절대 위치 1
+                </div>
+                <div style="position: absolute; top: 60px; left: 60px; background: blue; color: white; padding: 10px; border-radius: 5px;">
+                    절대 위치 2
+                </div>
+                <div style="position: absolute; top: 100px; left: 100px; background: green; color: white; padding: 10px; border-radius: 5px;">
+                    절대 위치 3
+                </div>
+            </div>
+            
+            <h3>반투명 요소들</h3>
+            <div style="position: relative; height: 150px; background: linear-gradient(45deg, #ff6b6b, #4ecdc4);">
+                <div style="position: absolute; top: 20px; left: 20px; background: rgba(255,255,255,0.8); padding: 15px; border-radius: 10px;">
+                    반투명 흰색 박스
+                </div>
+                <div style="position: absolute; top: 70px; right: 20px; background: rgba(0,0,0,0.7); color: white; padding: 15px; border-radius: 10px;">
+                    반투명 검은색 박스
+                </div>
+            </div>
+        </div>
+
+        <!-- 푸터 -->
+        <div class="section" style="text-align: center; background: #2f3542; color: white;">
+            <h3>테스트 완료</h3>
+            <p>이 페이지는 OCR 클릭 추적 시스템의 성능을 테스트하기 위해 설계되었습니다.</p>
+            <button class="btn btn-light">처음으로</button>
+        </div>
+    </div>
+
+    <script>
+        // 모든 클릭 가능한 요소에 이벤트 리스너 추가
+        document.addEventListener('click', function(e) {
+            if (e.target.tagName === 'BUTTON' || e.target.tagName === 'A' || e.target.classList.contains('btn')) {
+                console.log('클릭된 요소:', e.target.textContent.trim(), '위치:', e.target.getBoundingClientRect());
+                // 시각적 피드백
+                e.target.style.transform = 'scale(0.95)';
+                setTimeout(() => {
+                    e.target.style.transform = '';
+                }, 150);
+            }
+        });
+
+        // 폼 제출 방지
+        document.addEventListener('submit', function(e) {
+            e.preventDefault();
+            alert('폼 제출이 방지되었습니다 (테스트 목적)');
+        });
+    </script>
+</body>
+</html>

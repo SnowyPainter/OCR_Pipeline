@@ -6,6 +6,8 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Tesseract;
+using OpenCvSharp;
+using OpenCvSharp.Extensions;
 
 namespace OCRPipeline
 {
@@ -67,44 +69,32 @@ namespace OCRPipeline
             Console.WriteLine($"OCRService initialized (lang={_opt.Languages}, tessdata={tessPath})");
         }
 
+
+
         /// <summary>
-        /// 전처리된 이미지 경로 배열을 받아 순차 OCR 수행.
+        /// In-memory OCR from an OpenCvSharp Mat (preferred for pipeline).
         /// </summary>
-        public ItemResult RecognizeAsync(
-            string preprocessedPath,
-            CancellationToken ct = default)
+        public ItemResult RecognizeMat(Mat mat, CancellationToken ct = default)
         {
-            if (!File.Exists(preprocessedPath))
-                throw new FileNotFoundException("Preprocessed image not found", preprocessedPath);
-            using var bmp = new Bitmap(preprocessedPath);
-            using var pix = Pix.LoadFromFile(preprocessedPath);
+            if (mat.Empty())
+                throw new ArgumentException("Input Mat is empty", nameof(mat));
+
+            using var bmp = BitmapConverter.ToBitmap(mat);
+            var bytes = ImageExtension.ConvertBitmapToByteArray(bmp, System.Drawing.Imaging.ImageFormat.Png);
+            using var pix = Pix.LoadFromMemory(bytes);
             using var page = _engine.Process(pix, _opt.Psm);
-            string text = page.GetText()?.Trim() ?? "";
+            string text = page.GetText()?.Trim() ?? string.Empty;
             float conf = page.GetMeanConfidence() * 100.0f;
-            var result = new ItemResult
+            return new ItemResult
             {
-                Path = preprocessedPath,
+                Path = string.Empty,
                 Text = text,
                 MeanConfidence = conf,
                 Success = true
             };
-
-            return result;
         }
 
-        /// <summary>
-        /// 여러 결과 텍스트를 합쳐 하나로 반환(파일 경계는 --- 구분선)
-        /// </summary>
-        public static string ConcatenateTexts(IEnumerable<ItemResult> items)
-        {
-            var sw = new System.Text.StringBuilder();
-            foreach (var it in items)
-            {
-                if (!it.Success || string.IsNullOrWhiteSpace(it.Text) || it.MeanConfidence < 70) continue;
-                sw.AppendLine(it.Text);
-            }
-            return sw.ToString().Trim();
-        }
+
 
         public static string TrimConcatenatedText(string text)
         {
